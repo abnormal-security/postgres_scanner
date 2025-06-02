@@ -87,14 +87,12 @@ static void PostgresGetSnapshot(PostgresVersion version, const PostgresBindData 
 		return;
 	}
 
+	// As of PostgreSQL 10.0 (right after 9.6), synchronous snapshots
+	// are allowed on replicas. (https://www.postgresql.org/docs/release/10.0/)
 	result =
-	    con.TryQuery("SELECT pg_is_in_recovery(), pg_export_snapshot(), (select count(*) from pg_stat_wal_receiver)");
+	    con.TryQuery("SELECT pg_export_snapshot()");
 	if (result) {
-		auto in_recovery = result->GetBool(0, 0) || result->GetInt64(0, 2) > 0;
-		gstate.snapshot = "";
-		if (!in_recovery) {
-			gstate.snapshot = result->GetString(0, 1);
-		}
+		gstate.snapshot = result->GetString(0, 1);
 		return;
 	}
 }
