@@ -92,7 +92,7 @@ static void PostgresGetSnapshot(PostgresVersion version, const PostgresBindData 
 	result =
 	    con.TryQuery("SELECT pg_export_snapshot()");
 	if (result) {
-		gstate.snapshot = result->GetString(0, 1);
+		gstate.snapshot = result->GetString(0, 0);
 		return;
 	}
 }
