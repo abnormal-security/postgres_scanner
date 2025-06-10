@@ -75,25 +75,50 @@ static void PostgresGetSnapshot(PostgresVersion version, const PostgresBindData 
 	}
 	// reader threads can use the same snapshot
 	auto &con = gstate.GetConnection();
-	// pg_stat_wal_receiver was introduced in PostgreSQL 9.6
+
+	// Discover whether or not the DB is in recovery mode (e.g. a replica or standby).
+	auto in_recovery = false;
+	// pg_stat_wal_receiver was introduced in PostgreSQL 9.6,
+	// so only use pg_is_in_recovery for versions before that.
 	if (version < PostgresVersion(9, 6, 0)) {
-		result = con.TryQuery("SELECT pg_is_in_recovery(), pg_export_snapshot()");
+		result = con.TryQuery("SELECT pg_is_in_recovery()");
 		if (result) {
-			auto in_recovery = result->GetBool(0, 0);
-			if (!in_recovery) {
-				gstate.snapshot = result->GetString(0, 1);
-			}
+			in_recovery = result->GetBool(0, 0);
 		}
-		return;
+	} else {
+		result =
+			con.TryQuery("SELECT pg_is_in_recovery(), (select count(*) from pg_stat_wal_receiver)");
+		if (result) {
+			in_recovery = result->GetBool(0, 0) || result->GetInt64(0, 1) > 0;
+		}
 	}
 
-	// As of PostgreSQL 10.0 (right after 9.6), synchronous snapshots
-	// are allowed on replicas. (https://www.postgresql.org/docs/release/10.0/)
-	result =
-	    con.TryQuery("SELECT pg_export_snapshot()");
-	if (result) {
-		gstate.snapshot = result->GetString(0, 0);
-		return;
+	auto should_use_synchronous_snapshot = false;
+	if (in_recovery) {
+		// As of PostgreSQL 10.0 (right after 9.6), synchronous snapshots
+		// are allowed on replicas. (https://www.postgresql.org/docs/release/10.0/)
+		if (version >= PostgresVersion(10, 0, 0)) {
+			// If the database is in recovery mode, check if hot_standby_feedback is enabled.
+			// hot_standby_feedback allows us to use a synchronous snapshot with less risk of
+			// tuples being removed by the primary while we are reading them.
+			// The alternative is to rely on max_standby_streaming_delay/max_standby_archive_delay,
+			// which is subjective to the query being executed and hence not reliable.
+			result = con.TryQuery("SELECT (select count(*) from pg_settings where name = 'hot_standby_feedback' and setting = 'on')");
+			if (result && result->GetInt64(0, 0) > 0) {
+				should_use_synchronous_snapshot = true;
+			}
+		}
+	} else {
+		// We can almost definitely use a synchronous snapshot
+		// on a primary database (not in recovery mode).
+		should_use_synchronous_snapshot = true;
+	}
+
+	if (should_use_synchronous_snapshot) {
+		result = con.TryQuery("SELECT pg_export_snapshot()");
+		if (result) {
+			gstate.snapshot = result->GetString(0, 0);
+		}
 	}
 }
 
